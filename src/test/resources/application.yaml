@@ -1,0 +1,50 @@
+spring:
+  application:
+    name: ms-andesstay-notify-test
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: https://login.microsoftonline.com/test-tenant/v2.0
+
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest
+    virtual-host: /
+    listener:
+      simple:
+        acknowledge-mode: manual
+
+app:
+  cors:
+    allowed-origins: http://localhost:3000
+    allowed-methods: GET,POST,PUT,DELETE,OPTIONS
+    allowed-headers: "*"
+    allow-credentials: true
+
+  rabbit:
+    exchange-direct: cmd.direct
+    exchange-topic: cmd.topic
+    exchange-dlx: cmd.dead.dlx
+    email:
+      queue: q.cmd.email
+      dlq: q.cmd.email.dlq
+      routing-key-direct: email.send
+      routing-key-topic: email.*
+      routing-key-dlq: q.cmd.email.dlq
+    housekeeping:
+      queue: q.cmd.housekeeping
+      dlq: q.cmd.housekeeping.dlq
+      routing-key-direct: housekeeping.ticket
+      routing-key-topic: "housekeeping.#"
+      routing-key-dlq: q.cmd.housekeeping.dlq
+    voucher:
+      queue: q.cmd.voucher
+      dlq: q.cmd.voucher.dlq
+      routing-key-direct: voucher.gen
+      routing-key-topic: voucher.*
+      routing-key-dlq: q.cmd.voucher.dlq
+    max-retry-attempts: 3

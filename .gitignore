@@ -1,0 +1,24 @@
+# Maven
+target/
+!.mvn/wrapper/maven-wrapper.jar
+dependency-reduced-pom.xml
+
+# Secretos y entorno
+.env
+*.pem
+*.key
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+*.swp
+
+# SO / logs
+.DS_Store
+Thumbs.db
+*.log
+HELP.md

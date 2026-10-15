@@ -1,0 +1,56 @@
+### Pruebas locales de ms-andesstay-notify (extensión "REST Client" de VS Code)
+### Publican directo en RabbitMQ usando su API de administración (guest/guest).
+@rabbit = http://localhost:15672/api
+@auth = Basic Z3Vlc3Q6Z3Vlc3Q=
+
+### 1. Flujo feliz: mensaje válido a q.cmd.email (cada envío usa un eventId nuevo)
+POST {{rabbit}}/exchanges/%2F/cmd.direct/publish
+Authorization: {{auth}}
+Content-Type: application/json
+
+{
+  "properties": { "content_type": "application/json" },
+  "routing_key": "email.send",
+  "payload_encoding": "string",
+  "payload": "{\"type\":\"RESERVATION_CREATED\",\"eventId\":\"{{$guid}}\",\"timestamp\":\"2026-10-15T10:00:00Z\",\"traceId\":\"t-1\",\"correlationId\":\"c-1\",\"payload\":{\"reservationId\":1,\"guestName\":\"Juan Perez\",\"guestEmail\":\"juan@example.com\",\"propertyName\":\"Hostal Andes\",\"roomNumber\":\"101\",\"checkIn\":\"2026-11-01\",\"checkOut\":\"2026-11-04\",\"totalAmount\":50000,\"currency\":\"CLP\",\"operatorEmail\":\"operador@andesstay.cl\",\"specialRequests\":null}}"
+}
+
+### 2. Housekeeping
+POST {{rabbit}}/exchanges/%2F/cmd.direct/publish
+Authorization: {{auth}}
+Content-Type: application/json
+
+{
+  "properties": { "content_type": "application/json" },
+  "routing_key": "housekeeping.ticket",
+  "payload_encoding": "string",
+  "payload": "{\"type\":\"RESERVATION_CONFIRMED\",\"eventId\":\"{{$guid}}\",\"timestamp\":\"2026-10-15T10:00:00Z\",\"traceId\":\"t-2\",\"correlationId\":\"c-2\",\"payload\":{\"reservationId\":2,\"guestName\":\"Ana Soto\",\"guestEmail\":\"ana@example.com\",\"propertyName\":\"Cabana Lago\",\"roomNumber\":\"C-3\",\"checkIn\":\"2026-11-02\",\"checkOut\":\"2026-11-05\",\"totalAmount\":90000,\"currency\":\"CLP\",\"operatorEmail\":\"operador@andesstay.cl\",\"specialRequests\":\"cama extra\"}}"
+}
+
+### 3. Voucher
+POST {{rabbit}}/exchanges/%2F/cmd.direct/publish
+Authorization: {{auth}}
+Content-Type: application/json
+
+{
+  "properties": { "content_type": "application/json" },
+  "routing_key": "voucher.gen",
+  "payload_encoding": "string",
+  "payload": "{\"type\":\"RESERVATION_CONFIRMED\",\"eventId\":\"{{$guid}}\",\"timestamp\":\"2026-10-15T10:00:00Z\",\"traceId\":\"t-3\",\"correlationId\":\"c-3\",\"payload\":{\"reservationId\":3,\"guestName\":\"Luis Rojas\",\"guestEmail\":\"luis@example.com\",\"propertyName\":\"Lodge Volcan\",\"roomNumber\":\"L-7\",\"checkIn\":\"2026-11-10\",\"checkOut\":\"2026-11-12\",\"totalAmount\":120000,\"currency\":\"CLP\",\"operatorEmail\":\"operador@andesstay.cl\",\"specialRequests\":null}}"
+}
+
+### 4. Mensaje inválido (fecha mal escrita) → no se puede convertir → DLQ directo
+POST {{rabbit}}/exchanges/%2F/cmd.direct/publish
+Authorization: {{auth}}
+Content-Type: application/json
+
+{
+  "properties": { "content_type": "application/json" },
+  "routing_key": "email.send",
+  "payload_encoding": "string",
+  "payload": "{\"type\":\"RESERVATION_CREATED\",\"eventId\":\"{{$guid}}\",\"payload\":{\"reservationId\":9,\"checkIn\":\"esto-no-es-una-fecha\"}}"
+}
+
+### 5. Ver cuántos mensajes hay en las colas y DLQ
+GET {{rabbit}}/queues/%2F
+Authorization: {{auth}}

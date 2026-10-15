@@ -1,0 +1,99 @@
+spring:
+  application:
+    name: ms-andesstay-notify
+
+  # ─── Profile activo: 'prod' por defecto (seguro). En local usar SPRING_PROFILES_ACTIVE=dev ──
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:prod}
+
+  # ─── Base de datos PostgreSQL ─────────────────────────────────────────────────
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:andesstay_notify}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASS:postgres}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 5
+      connection-timeout: 20000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate          # dev y prod lo sobreescriben con 'update' (no hay Flyway en el proyecto)
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+
+  # ─── RabbitMQ conexión ────────────────────────────────────────────────────────
+  rabbitmq:
+    host: ${RABBIT_HOST:localhost}
+    port: ${RABBIT_PORT:5672}
+    username: ${RABBIT_USER:guest}
+    password: ${RABBIT_PASS:guest}
+    virtual-host: /
+    listener:
+      simple:
+        # ACK manual obligatorio para controlar reintento y DLQ
+        acknowledge-mode: manual
+        default-requeue-rejected: false   # un rechazo va al DLX → DLQ, no vuelve a la cola
+        retry:
+          enabled: false          # La lógica de reintento se gestiona manualmente en los listeners
+        prefetch: 10
+        concurrency: 2
+        max-concurrency: 5
+
+server:
+  port: 8082
+
+# ─── Actuator ─────────────────────────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics
+  endpoint:
+    health:
+      show-details: when_authorized
+
+# ─── CORS ─────────────────────────────────────────────────────────────────────
+app:
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:4200}
+    allowed-methods: GET,POST,PUT,DELETE,OPTIONS
+    allowed-headers: "*"
+    allow-credentials: true
+
+  # ─── Topología RabbitMQ ─────────────────────────────────────────────────────
+  rabbit:
+    exchange-direct: cmd.direct
+    exchange-topic: cmd.topic
+    exchange-dlx: cmd.dead.dlx
+
+    email:
+      queue: q.cmd.email
+      dlq: q.cmd.email.dlq
+      routing-key-direct: email.send
+      routing-key-topic: email.*
+      routing-key-dlq: q.cmd.email.dlq
+
+    housekeeping:
+      queue: q.cmd.housekeeping
+      dlq: q.cmd.housekeeping.dlq
+      routing-key-direct: housekeeping.ticket
+      routing-key-topic: "housekeeping.#"
+      routing-key-dlq: q.cmd.housekeeping.dlq
+
+    voucher:
+      queue: q.cmd.voucher
+      dlq: q.cmd.voucher.dlq
+      routing-key-direct: voucher.gen
+      routing-key-topic: voucher.*
+      routing-key-dlq: q.cmd.voucher.dlq
+
+    max-retry-attempts: 3
+
+logging:
+  level:
+    com.andesstay.notify: DEBUG
+    org.springframework.amqp: INFO

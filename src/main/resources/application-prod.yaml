@@ -1,0 +1,38 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Profile PROD — EC2 / Docker (es el profile por defecto)
+#
+# Todos los valores sensibles vienen de variables de entorno y NO tienen valor
+# por defecto: si falta alguna, la aplicación no arranca (fail-fast).
+#
+#   JWT_ISSUER_URI  https://login.microsoftonline.com/<TENANT_ID>/v2.0
+#   DB_HOST, DB_NAME, DB_USER, DB_PASS   (RDS PostgreSQL)
+#   RABBIT_HOST, RABBIT_USER, RABBIT_PASS
+# ─────────────────────────────────────────────────────────────────────────────
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${JWT_ISSUER_URI}
+
+  datasource:
+    url: jdbc:postgresql://${DB_HOST}:${DB_PORT:5432}/${DB_NAME}
+    username: ${DB_USER}
+    password: ${DB_PASS}
+
+  jpa:
+    hibernate:
+      # No hay Flyway: 'validate' fallaría en una RDS nueva porque la tabla
+      # processed_events no existe. 'update' la crea la primera vez.
+      ddl-auto: update
+    show-sql: false
+
+  rabbitmq:
+    host: ${RABBIT_HOST}
+    username: ${RABBIT_USER}
+    password: ${RABBIT_PASS}
+
+logging:
+  level:
+    com.andesstay.notify: INFO
+    org.springframework.amqp: INFO

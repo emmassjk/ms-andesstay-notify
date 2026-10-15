@@ -1,0 +1,36 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Profile DEV — desarrollo local
+# Se activa automáticamente cuando spring.profiles.active=dev (por defecto en local).
+#
+# Diferencias respecto al yaml base:
+#   1. JWT deshabilitado → Spring Security permite todas las peticiones sin token.
+#   2. ddl-auto: update → Hibernate crea/migra tablas automáticamente (sin Flyway).
+#   3. show-sql: true   → Muestra las queries en consola para debug.
+#   4. Credenciales locales hardcoded (NUNCA en producción).
+# ─────────────────────────────────────────────────────────────────────────────
+spring:
+  # ─── Sin JWT en dev ───────────────────────────────────────────────────────
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ""
+
+  # ─── Credenciales BD locales ──────────────────────────────────────────────
+  datasource:
+    url: jdbc:postgresql://localhost:5432/andesstay_notify
+    username: postgres
+    password: alo12maldito17
+
+  # ─── JPA: crea la tabla si no existe ─────────────────────────────────────
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+
+logging:
+  level:
+    com.andesstay.notify: DEBUG
+    org.springframework.amqp: DEBUG
+    org.hibernate.SQL: DEBUG
+
