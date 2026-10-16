@@ -5,6 +5,7 @@ import com.andesstay.notify.event.ReservationEnvelope;
 import com.andesstay.notify.messaging.retry.RetryPublisher;
 import com.andesstay.notify.services.VoucherService;
 import com.andesstay.notify.services.IdempotencyRegistry;
+import com.andesstay.notify.services.NotificacionService;
 import com.rabbitmq.client.Channel;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -31,6 +32,7 @@ class VoucherListenerTest {
 
     @Mock private VoucherService voucherService;
     @Mock private IdempotencyRegistry idempotencyRegistry;
+    @Mock private NotificacionService notificacionService;
     @Mock private RetryPublisher retryPublisher;
     @Mock private Channel channel;
 
@@ -39,7 +41,7 @@ class VoucherListenerTest {
     @BeforeEach
     void setUp() {
         listener = new VoucherListener(voucherService, idempotencyRegistry,
-                TestData.rabbitProperties(), retryPublisher);
+                notificacionService, TestData.rabbitProperties(), retryPublisher);
     }
 
     @Test

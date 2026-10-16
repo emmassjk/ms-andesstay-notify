@@ -1,7 +1,9 @@
 package com.andesstay.notify.messaging.consumer.housekeeping;
 
+import com.andesstay.notify.entities.Notificacion.CanalNotificacion;
 import com.andesstay.notify.event.ReservationEnvelope;
 import com.andesstay.notify.services.HousekeepingService;
+import com.andesstay.notify.services.NotificacionService;
 import com.andesstay.notify.messaging.retry.RetryPublisher;
 import com.andesstay.notify.services.IdempotencyRegistry;
 import com.rabbitmq.client.Channel;
@@ -42,6 +44,7 @@ public class HousekeepingListener {
 
     private final HousekeepingService housekeepingService;
     private final IdempotencyRegistry idempotencyRegistry;
+    private final NotificacionService notificacionService;
     private final int maxRetry;
     private final String queueName;
     private final RetryPublisher retryPublisher;
@@ -49,10 +52,12 @@ public class HousekeepingListener {
     public HousekeepingListener(
             HousekeepingService housekeepingService,
             IdempotencyRegistry idempotencyRegistry,
+            NotificacionService notificacionService,
             com.andesstay.notify.config.RabbitProperties rabbitProperties,
             RetryPublisher retryPublisher) {
         this.housekeepingService = housekeepingService;
         this.idempotencyRegistry = idempotencyRegistry;
+        this.notificacionService = notificacionService;
         this.maxRetry = rabbitProperties.maxRetryAttempts();
         this.queueName = rabbitProperties.housekeeping().queue();
         this.retryPublisher = retryPublisher;
@@ -97,6 +102,10 @@ public class HousekeepingListener {
             housekeepingService.createHousekeepingTicket(envelope);
 
             idempotencyRegistry.markAsProcessed(envelope.eventId());
+            notificacionService.registrarNotificacionExitosa(
+                    CanalNotificacion.HOUSEKEEPING, envelope,
+                    "Ticket housekeeping para habitación " + envelope.payload().roomNumber(),
+                    "Ticket generado para " + envelope.payload().propertyName());
             channel.basicAck(tag, false);
             log.info("[HOUSEKEEPING] Mensaje procesado exitosamente. eventId={}", envelope.eventId());
 
@@ -105,6 +114,7 @@ public class HousekeepingListener {
             // basicNack con requeue=false: el broker lo envía al DLX → DLQ
             log.error("[HOUSEKEEPING] Error no recuperable (datos inválidos). eventId={}, error={}",
                     envelope.eventId(), e.getMessage(), e);
+            notificacionService.registrarNotificacionFallida(CanalNotificacion.HOUSEKEEPING, envelope, e.getMessage());
             channel.basicNack(tag, false, false); // → DLQ
 
         } catch (Exception e) {

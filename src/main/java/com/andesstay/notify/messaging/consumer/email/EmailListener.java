@@ -1,7 +1,9 @@
 package com.andesstay.notify.messaging.consumer.email;
 
+import com.andesstay.notify.entities.Notificacion.CanalNotificacion;
 import com.andesstay.notify.event.ReservationEnvelope;
 import com.andesstay.notify.services.EmailNotificationService;
+import com.andesstay.notify.services.NotificacionService;
 import com.andesstay.notify.messaging.retry.RetryPublisher;
 import com.andesstay.notify.services.IdempotencyRegistry;
 import com.rabbitmq.client.Channel;
@@ -51,6 +53,7 @@ public class EmailListener {
 
     private final EmailNotificationService emailService;
     private final IdempotencyRegistry idempotencyRegistry;
+    private final NotificacionService notificacionService;
     private final int maxRetry;
     private final String queueName;
     private final RetryPublisher retryPublisher;
@@ -58,10 +61,12 @@ public class EmailListener {
     public EmailListener(
             EmailNotificationService emailService,
             IdempotencyRegistry idempotencyRegistry,
+            NotificacionService notificacionService,
             com.andesstay.notify.config.RabbitProperties rabbitProperties,
             RetryPublisher retryPublisher) {
         this.emailService = emailService;
         this.idempotencyRegistry = idempotencyRegistry;
+        this.notificacionService = notificacionService;
         this.maxRetry = rabbitProperties.maxRetryAttempts();
         this.queueName = rabbitProperties.email().queue();
         this.retryPublisher = retryPublisher;
@@ -109,6 +114,10 @@ public class EmailListener {
             emailService.sendReservationConfirmation(envelope);
 
             idempotencyRegistry.markAsProcessed(envelope.eventId());
+            notificacionService.registrarNotificacionExitosa(
+                    CanalNotificacion.EMAIL, envelope,
+                    "Confirmación de reserva #" + envelope.payload().reservationId(),
+                    "Email enviado a " + envelope.payload().guestEmail());
             channel.basicAck(tag, false);
             log.info("[EMAIL] Mensaje procesado exitosamente. eventId={}", envelope.eventId());
 
@@ -117,6 +126,7 @@ public class EmailListener {
             // basicNack con requeue=false: el broker lo envía al DLX → DLQ
             log.error("[EMAIL] Error no recuperable (datos inválidos). eventId={}, error={}",
                     envelope.eventId(), e.getMessage(), e);
+            notificacionService.registrarNotificacionFallida(CanalNotificacion.EMAIL, envelope, e.getMessage());
             channel.basicNack(tag, false, false); // → DLQ
 
         } catch (Exception e) {
