@@ -1,0 +1,108 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# docker-compose.yml — ms-andesstay-notify
+#
+# Levanta el stack completo para desarrollo local:
+#   1. PostgreSQL 16 (base de datos)
+#   2. RabbitMQ 3 con Management UI
+#   3. ms-andesstay-notify (Spring Boot)
+#
+# Uso:
+#   docker compose up -d              # Levanta todo en background
+#   docker compose up -d --build      # Rebuilds la app y levanta
+#   docker compose logs -f app        # Ver logs de la aplicación
+#   docker compose down -v            # Baja todo y elimina volúmenes
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ─── PostgreSQL 16 ──────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: andesstay-notify-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: andesstay_notify
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d andesstay_notify"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - notify-net
+
+  # ─── RabbitMQ 3 con Management UI ──────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: andesstay-notify-rabbit
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      # Puerto AMQP (conexión de la app)
+      - "5672:5672"
+      # Puerto Management UI (panel web)
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - notify-net
+
+  # ─── ms-andesstay-notify (Spring Boot) ─────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: andesstay-notify-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      # ── Conexión a PostgreSQL (hostname = nombre del servicio en docker-compose)
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: andesstay_notify
+      DB_USER: postgres
+      DB_PASS: postgres
+      # ── Conexión a RabbitMQ
+      RABBIT_HOST: rabbitmq
+      RABBIT_PORT: 5672
+      RABBIT_USER: guest
+      RABBIT_PASS: guest
+      # ── CORS (permitir frontend local)
+      CORS_ALLOWED_ORIGINS: "http://localhost:3000,http://localhost:4200"
+      # ── JVM tuning para contenedor (opcional)
+      JAVA_OPTS: "-Xms256m -Xmx512m"
+    ports:
+      - "8082:8082"
+    networks:
+      - notify-net
+
+# ─── Volúmenes persistentes ──────────────────────────────────────────────────
+volumes:
+  pgdata:
+    driver: local
+  rabbitmq_data:
+    driver: local
+
+# ─── Red interna ─────────────────────────────────────────────────────────────
+networks:
+  notify-net:
+    driver: bridge
