@@ -1,7 +1,14 @@
+# ─── Docker ignore — ms-andesstay-notify ─────────────────────────────────────
+# El multi-stage build necesita pom.xml y src/ para compilar dentro del contenedor.
+# Se excluye todo lo que NO es necesario para el build.
 .git
+.gitignore
 .idea
 .vscode
 .env
+.env.*
 *.pem
-src
-!target/*.jar
+*.md
+test.http
+target
+docker-compose.yml
