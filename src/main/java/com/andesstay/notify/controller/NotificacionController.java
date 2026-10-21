@@ -1,14 +1,22 @@
 package com.andesstay.notify.controller;
 
+import com.andesstay.notify.dto.EnviarNotificacionRequest;
+import com.andesstay.notify.dto.EnviarNotificacionResponse;
 import com.andesstay.notify.dto.NotificacionDTO;
 import com.andesstay.notify.entities.Notificacion.CanalNotificacion;
 import com.andesstay.notify.entities.Notificacion.EstadoNotificacion;
+import com.andesstay.notify.messaging.producer.NotificacionProducer;
 import com.andesstay.notify.model.NotifyConstants;
 import com.andesstay.notify.services.NotificacionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import jakarta.validation.Valid;
+import org.springframework.amqp.AmqpException;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -30,6 +38,7 @@ import java.util.List;
  *   <li>{@code GET /canal/{canal}}            — Filtrar por canal.</li>
  *   <li>{@code GET /estado/{estado}}          — Filtrar por estado.</li>
  *   <li>{@code GET /reserva/{reservationId}}  — Filtrar por reserva.</li>
+ *   <li>{@code POST /enviar}                  — PRODUCER: publica una notificación en RabbitMQ.</li>
  * </ul>
  */
 @RestController
@@ -39,9 +48,29 @@ public class NotificacionController {
     private static final Logger log = LoggerFactory.getLogger(NotificacionController.class);
 
     private final NotificacionService notificacionService;
+    private final NotificacionProducer producer;
 
-    public NotificacionController(NotificacionService notificacionService) {
+    public NotificacionController(NotificacionService notificacionService, NotificacionProducer producer) {
         this.notificacionService = notificacionService;
+        this.producer = producer;
+    }
+
+    /**
+     * PRODUCER: valida la solicitud y la publica en RabbitMQ (exchange cmd.direct).
+     * El consumer del canal la procesa de forma asíncrona y deja el registro en el
+     * historial ({@code GET /}).
+     *
+     * @return 202 Accepted con el eventId; 503 si RabbitMQ no está disponible.
+     */
+    @PostMapping(NotifyConstants.API_ENVIAR)
+    public ResponseEntity<EnviarNotificacionResponse> enviar(@Valid @RequestBody EnviarNotificacionRequest request) {
+        log.debug("POST {}{} — canal={}", NotifyConstants.API_BASE, NotifyConstants.API_ENVIAR, request.canal());
+        try {
+            return ResponseEntity.status(HttpStatus.ACCEPTED).body(producer.publicar(request));
+        } catch (AmqpException e) {
+            log.error("No se pudo publicar en RabbitMQ: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+        }
     }
 
     /**

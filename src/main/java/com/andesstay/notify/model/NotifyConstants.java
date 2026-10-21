@@ -23,6 +23,7 @@ public final class NotifyConstants {
     public static final String API_BY_CANAL     = "/canal/{canal}";
     public static final String API_BY_ESTADO    = "/estado/{estado}";
     public static final String API_BY_RESERVA   = "/reserva/{reservationId}";
+    public static final String API_ENVIAR       = "/enviar";
 
     // ─── Mensajes de error estándar ──────────────────────────────────────────
     public static final String ERR_NOT_FOUND    = "Notificación no encontrada con id: ";
