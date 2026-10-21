@@ -16,11 +16,13 @@ spring:
         jwt:
           issuer-uri: ""
 
-  # ─── Credenciales BD locales ──────────────────────────────────────────────
+  # ─── BD: usa env vars (DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS).
+  #     En local sin Docker: crea un .env o exporta las variables manualmente.
+  #     En Docker: docker-compose.yml inyecta los valores correctos.
   datasource:
-    url: jdbc:postgresql://localhost:5432/andesstay_notify
-    username: postgres
-    password: alo12maldito17
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:andesstay_notify}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASS:postgres}
 
   # ─── JPA: crea la tabla si no existe ─────────────────────────────────────
   jpa:

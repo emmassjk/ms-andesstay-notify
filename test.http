@@ -54,3 +54,26 @@ Content-Type: application/json
 ### 5. Ver cuántos mensajes hay en las colas y DLQ
 GET {{rabbit}}/queues/%2F
 Authorization: {{auth}}
+
+### 6. PRODUCER: publicar una notificación por la API (en dev no pide token; en prod: Authorization: Bearer <token de Azure>)
+# canal: EMAIL | HOUSEKEEPING | VOUCHER
+POST http://localhost:8082/api/v1/notificaciones/enviar
+Content-Type: application/json
+
+{
+  "canal": "EMAIL",
+  "reservationId": 10,
+  "guestName": "Ana Soto",
+  "guestEmail": "ana@example.com",
+  "propertyName": "Cabaña Lago",
+  "roomNumber": "C-3",
+  "checkIn": "2026-11-02",
+  "checkOut": "2026-11-05",
+  "totalAmount": 90000,
+  "currency": "CLP",
+  "operatorEmail": "operador@andesstay.cl",
+  "specialRequests": "cama extra"
+}
+
+### 7. Ver el historial (el consumer ya procesó el mensaje del paso 6)
+GET http://localhost:8082/api/v1/notificaciones

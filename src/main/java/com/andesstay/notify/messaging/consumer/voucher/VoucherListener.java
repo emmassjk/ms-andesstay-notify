@@ -1,8 +1,10 @@
 package com.andesstay.notify.messaging.consumer.voucher;
 
+import com.andesstay.notify.entities.Notificacion.CanalNotificacion;
 import com.andesstay.notify.event.ReservationEnvelope;
 import com.andesstay.notify.messaging.retry.RetryPublisher;
 import com.andesstay.notify.services.IdempotencyRegistry;
+import com.andesstay.notify.services.NotificacionService;
 import com.andesstay.notify.services.VoucherService;
 import com.rabbitmq.client.Channel;
 import org.slf4j.Logger;
@@ -43,6 +45,7 @@ public class VoucherListener {
 
     private final VoucherService voucherService;
     private final IdempotencyRegistry idempotencyRegistry;
+    private final NotificacionService notificacionService;
     private final int maxRetry;
     private final String queueName;
     private final RetryPublisher retryPublisher;
@@ -50,10 +53,12 @@ public class VoucherListener {
     public VoucherListener(
             VoucherService voucherService,
             IdempotencyRegistry idempotencyRegistry,
+            NotificacionService notificacionService,
             com.andesstay.notify.config.RabbitProperties rabbitProperties,
             RetryPublisher retryPublisher) {
         this.voucherService = voucherService;
         this.idempotencyRegistry = idempotencyRegistry;
+        this.notificacionService = notificacionService;
         this.maxRetry = rabbitProperties.maxRetryAttempts();
         this.queueName = rabbitProperties.voucher().queue();
         this.retryPublisher = retryPublisher;
@@ -98,6 +103,10 @@ public class VoucherListener {
             voucherService.generateVoucherPdf(envelope);
 
             idempotencyRegistry.markAsProcessed(envelope.eventId());
+            notificacionService.registrarNotificacionExitosa(
+                    CanalNotificacion.VOUCHER, envelope,
+                    "Voucher reserva #" + envelope.payload().reservationId(),
+                    "PDF generado: voucher_" + envelope.payload().reservationId() + ".pdf");
             channel.basicAck(tag, false);
             log.info("[VOUCHER] Mensaje procesado exitosamente. eventId={}", envelope.eventId());
 
@@ -106,6 +115,7 @@ public class VoucherListener {
             // basicNack con requeue=false: el broker lo envía al DLX → DLQ
             log.error("[VOUCHER] Error no recuperable (datos inválidos). eventId={}, error={}",
                     envelope.eventId(), e.getMessage(), e);
+            notificacionService.registrarNotificacionFallida(CanalNotificacion.VOUCHER, envelope, e.getMessage());
             channel.basicNack(tag, false, false); // → DLQ
 
         } catch (Exception e) {
