@@ -1,0 +1,36 @@
+# docker-compose.aws.yml — despliegue en la EC2 (RabbitMQ + ms-andesstay-notify).
+# La base de datos NO va aquí: es PostgreSQL en RDS.
+# Los valores salen del archivo .env (no se sube a Git):
+#   docker compose -f docker-compose.aws.yml --env-file .env up -d --build
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBIT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASS}
+    ports:
+      - "15672:15672"          # panel de administración (restringido por security group)
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  app:
+    build: .
+    container_name: notify
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "8082:8082"
+
+volumes:
+  rabbitmq_data:
