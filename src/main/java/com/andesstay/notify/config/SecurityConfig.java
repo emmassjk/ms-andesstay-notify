@@ -6,6 +6,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -21,99 +22,81 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * Configuración de seguridad HTTP para ms-andesstay-notify.
+ * Configuración de seguridad HTTP y CORS para ms-andesstay-notify.
  * <p>
- * <strong>Política de acceso:</strong>
- * <ul>
- *   <li>{@code /actuator/health}, {@code /actuator/info} — públicos, sin autenticación.</li>
- *   <li>{@code /api/v1/notificaciones/**} — requiere JWT válido (Bearer token en header Authorization).</li>
- *   <li>Cualquier otro endpoint — requiere JWT válido emitido por Azure AD.</li>
- * </ul>
- * <p>
- * <strong>Profile dev:</strong> cuando {@code spring.security.oauth2.resourceserver.jwt.issuer-uri}
- * está vacío (application-dev.yaml), se omite el Resource Server y <em>todas</em> las
- * peticiones son permitidas sin token. Nunca usar en producción.
- * <p>
- * <strong>Profile prod:</strong> el microservicio actúa como un OAuth2 Resource Server.
- * Cada petición a los endpoints protegidos debe incluir un header
- * {@code Authorization: Bearer <token>} con un JWT válido emitido por Azure AD
- * (Microsoft Entra ID). Spring Security valida automáticamente:
- * <ul>
- *   <li>Firma del token (descarga las claves públicas del issuer).</li>
- *   <li>Expiración ({@code exp} claim).</li>
- *   <li>Issuer ({@code iss} claim) contra el configurado en {@code jwt.issuer-uri}.</li>
- * </ul>
+ * <strong>Rol dentro de la arquitectura:</strong>
+ * El microservicio recibe peticiones HTTP reenviadas desde el API Gateway / BFF
+ * (o llamadas directas autorizadas). Para integrarse de forma segura en la nube:
+ * <ol>
+ *   <li>Actúa como un <strong>OAuth2 Resource Server</strong>, validando la firma,
+ *       issuer y vigencia del JWT (emitido por Azure AD o AWS Cognito).</li>
+ *   <li>Configura <strong>CORS</strong> de forma amplia para admitir todos los
+ *       orígenes necesarios (frontend Angular, BFF, preflights OPTIONS), exponiendo
+ *       el header de Authorization.</li>
+ *   <li>Mantiene una política de sesiones <strong>STATELESS</strong> y CSRF deshabilitado
+ *       por ser una API REST basada en tokens.</li>
+ * </ol>
  */
 @Configuration
 @EnableWebSecurity
-@EnableMethodSecurity  // Habilita @PreAuthorize, @Secured, etc. a nivel de método
+@EnableMethodSecurity
 public class SecurityConfig {
 
-    @Value("${app.cors.allowed-origins}")
+    @Value("${app.cors.allowed-origins:*}")
     private String allowedOriginsRaw;
 
-    @Value("${app.cors.allowed-methods}")
+    @Value("${app.cors.allowed-methods:GET,POST,PUT,DELETE,PATCH,OPTIONS}")
     private String allowedMethodsRaw;
 
-    @Value("${app.cors.allowed-headers}")
+    @Value("${app.cors.allowed-headers:*}")
     private String allowedHeaders;
 
-    @Value("${app.cors.allow-credentials}")
+    @Value("${app.cors.allow-credentials:true}")
     private boolean allowCredentials;
 
-    /** Vacío en profile dev → deshabilita JWT. Obligatorio en prod (Azure AD). */
+    /**
+     * URI del emisor de tokens OIDC (Azure AD o AWS Cognito).
+     * En producción se inyecta desde la variable de entorno JWT_ISSUER_URI.
+     */
     @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri:}")
     private String jwtIssuerUri;
 
     /**
-     * Cadena de filtros de seguridad principal.
-     * <p>
-     * Configura:
-     * <ol>
-     *   <li>CORS desde application.yaml.</li>
-     *   <li>CSRF deshabilitado (API stateless con JWT).</li>
-     *   <li>Sesiones stateless (no se crea HttpSession).</li>
-     *   <li>Autorización por URL path con JWT como filtro de autenticación.</li>
-     * </ol>
+     * Cadena principal de filtros de Spring Security.
+     * Habilita CORS, desactiva CSRF y configura el Resource Server para validar el JWT.
      */
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http, Environment env) throws Exception {
         http
-            // ── CORS ──────────────────────────────────────────────────────────
+            // ── Configuración de CORS ───────────────────────────────────────────
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
-            // ── CSRF deshabilitado: API REST stateless con JWT ─────────────────
+            // ── CSRF deshabilitado para API REST stateless con JWT ───────────────
             .csrf(csrf -> csrf.disable())
-            // ── Sin sesiones HTTP: cada request se autentica con el token ──────
+            // ── Sin estado de sesión HTTP en el servidor ─────────────────────────
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
 
         if (jwtIssuerUri == null || jwtIssuerUri.isBlank()) {
-            // ── Sin issuer-uri: SOLO se acepta en el profile 'dev' ────────────
-            // Si por error se arranca sin profile (o sin JWT_ISSUER_URI en prod),
-            // se aborta el arranque en lugar de dejar el servicio abierto.
-            if (!env.acceptsProfiles(Profiles.of("dev"))) {
+            // ── Profile dev / test: permite peticiones sin token si no hay issuer configurado ──
+            if (!env.acceptsProfiles(Profiles.of("dev", "test"))) {
                 throw new IllegalStateException(
-                        "spring.security.oauth2.resourceserver.jwt.issuer-uri está vacío fuera del profile 'dev'. "
-                      + "Define JWT_ISSUER_URI (Azure AD) o arranca con SPRING_PROFILES_ACTIVE=dev solo en local.");
+                        "spring.security.oauth2.resourceserver.jwt.issuer-uri está vacío fuera de los profiles 'dev' o 'test'. "
+                      + "Define JWT_ISSUER_URI para producción o arranca con SPRING_PROFILES_ACTIVE=dev solo en local.");
             }
-            // ── Profile DEV: sin JWT, todas las peticiones permitidas ─────────
-            // NUNCA activar en producción.
             http.authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
         } else {
-            // ── Profile PROD: JWT de Azure AD obligatorio ─────────────────────
+            // ── Profile prod / cloud: Validación obligatoria de JWT ──────────────
             http
                 .authorizeHttpRequests(auth -> auth
-                    // Endpoints públicos (health checks, info)
-                    .requestMatchers("/actuator/health").permitAll()
-                    .requestMatchers("/actuator/info").permitAll()
-                    // Endpoints de NotificacionController — requieren JWT
+                    // Permitir todas las peticiones preflight CORS (OPTIONS) sin requerir token
+                    .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                    // Endpoints públicos de diagnóstico y healthcheck (Actuator / AWS ALB)
+                    .requestMatchers("/actuator/health", "/actuator/info").permitAll()
+                    // Endpoints del NotificacionController (/api/v1/notificaciones/**) protegidos
                     .requestMatchers(NotifyConstants.API_BASE + "/**").authenticated()
-                    // Cualquier otro endpoint también requiere JWT
+                    // Cualquier otra petición requiere autenticación
                     .anyRequest().authenticated()
                 )
-                // ── OAuth2 Resource Server con JWT ─────────────────────────────
-                // Spring Security intercepta cada request, extrae el Bearer token
-                // del header Authorization, lo valida contra las claves públicas
-                // del issuer, y si es válido, establece el SecurityContext.
+                // ── Configuración como OAuth2 Resource Server para validar JWT del BFF ──
                 .oauth2ResourceServer(oauth2 -> oauth2
                     .jwt(jwt -> {})
                 );
@@ -123,43 +106,59 @@ public class SecurityConfig {
     }
 
     /**
-     * Decodificador JWT configurado con el issuer-uri.
-     * <p>
-     * Solo se activa cuando {@code jwtIssuerUri} no está vacío (profile prod).
-     * Spring descarga automáticamente la configuración OIDC del issuer
-     * ({@code .well-known/openid-configuration}) y las claves públicas (JWKS)
-     * para validar la firma de cada token.
+     * Bean de decodificación de JWT a partir del issuer configurado.
+     * En producción resuelve las llaves públicas (.well-known/jwks.json) automáticamente.
      */
     @Bean
     public JwtDecoder jwtDecoder() {
-        if (jwtIssuerUri == null || jwtIssuerUri.isBlank()) {
-            // En profile dev, retornamos un decoder no-op que acepta todo.
-            // Esto evita que Spring falle al arrancar sin un issuer real.
+        if (jwtIssuerUri == null || jwtIssuerUri.isBlank() || jwtIssuerUri.contains("CHANGE_ME")) {
             return token -> {
                 throw new UnsupportedOperationException(
-                    "JWT deshabilitado en profile dev. No debería llegar aquí.");
+                    "JWT no configurado o issuer inválido. Configure JWT_ISSUER_URI para activar el Resource Server.");
             };
         }
         return JwtDecoders.fromIssuerLocation(jwtIssuerUri);
     }
 
     /**
-     * Fuente de configuración CORS.
-     * Los orígenes, métodos y headers se leen desde application.yaml,
-     * por lo que son configurables sin recompilar el servicio.
+     * Bean de configuración de CORS.
+     * Habilita todos los orígenes mediante patrones (soportando '*' junto con allowCredentials),
+     * permite los métodos HTTP básicos y expone el header de Authorization.
      */
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
 
-        List<String> origins = Arrays.asList(allowedOriginsRaw.split(","));
-        config.setAllowedOrigins(origins);
+        // 1. Orígenes permitidos: soporta wildcard '*' o dominios específicos (ej. frontend Angular o BFF)
+        if (allowedOriginsRaw == null || allowedOriginsRaw.isBlank() || "*".equals(allowedOriginsRaw.trim())) {
+            config.addAllowedOriginPattern("*");
+        } else {
+            Arrays.stream(allowedOriginsRaw.split(","))
+                    .map(String::trim)
+                    .filter(origin -> !origin.isEmpty())
+                    .forEach(origin -> {
+                        if ("*".equals(origin)) {
+                            config.addAllowedOriginPattern("*");
+                        } else {
+                            config.addAllowedOriginPattern(origin);
+                        }
+                    });
+        }
 
-        List<String> methods = Arrays.asList(allowedMethodsRaw.split(","));
-        config.setAllowedMethods(methods);
+        // 2. Métodos HTTP permitidos
+        config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"));
 
-        config.setAllowedHeaders(List.of(allowedHeaders));
+        // 3. Headers permitidos en las solicitudes (incluye Authorization, Content-Type, etc.)
+        config.setAllowedHeaders(List.of("*"));
+
+        // 4. Headers expuestos al frontend / BFF
+        config.setExposedHeaders(List.of("Authorization", "Content-Disposition", "Link", "X-Total-Count"));
+
+        // 5. Permitir credenciales / headers de autorización
         config.setAllowCredentials(allowCredentials);
+
+        // 6. Tiempo de expiración del preflight (1 hora de cache)
+        config.setMaxAge(3600L);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", config);
