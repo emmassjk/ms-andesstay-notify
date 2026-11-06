@@ -1,14 +1,14 @@
 # ms-andesstay-notify
 
 Microservicio de **mensajería y notificaciones** del proyecto AndesStay (DSY1107 – Desarrollo Cloud Native I, Entrega 2).
-Spring Boot 3.3 · Java 21 · RabbitMQ · PostgreSQL (RDS) · autenticación con Microsoft Entra ID (Azure) · API Gateway (AWS).
+Spring Boot 3.3 · Java 21 · RabbitMQ · PostgreSQL (RDS) · autenticación con AWS Cognito · API Gateway (AWS).
 
 ## Arquitectura
 
 ```
-Angular (local) ──login──► Microsoft Entra ID (Azure) ──► access token (JWT)
+Angular (local) ──login──► AWS Cognito (User Pool) ──► access token (JWT)
       │
-      └─ Bearer token ─► API Gateway (AWS, JWT authorizer Azure)
+      └─ Bearer token ─► API Gateway (AWS, JWT authorizer Cognito)
                               │
                               ▼
                    EC2 · Docker ── ms-andesstay-notify :8082
@@ -22,9 +22,35 @@ Angular (local) ──login──► Microsoft Entra ID (Azure) ──► access
   con la routing key del canal (`email.send`, `housekeeping.ticket`, `voucher.gen`). Responde `202 Accepted` con el `eventId`.
 - **Consumers:** un listener por cola (`q.cmd.email`, `q.cmd.housekeeping`, `q.cmd.voucher`) con ACK manual,
   idempotencia por `eventId`, reintentos (máx. 3) y **DLQ** (`q.cmd.*.dlq`) para mensajes que fallan definitivamente.
-- **Seguridad:** resource server OAuth2; valida firma, expiración e issuer del JWT de Azure
-  (`https://login.microsoftonline.com/<TENANT_ID>/v2.0`). Todos los endpoints exigen token salvo `/actuator/health`.
-  En el profile `dev` (solo local) no se pide token.
+
+## Seguridad
+
+El microservicio actúa como un **OAuth2 Resource Server** que valida el access token JWT emitido por
+**AWS Cognito**. La validación incluye:
+
+1. **Firma** – verifica contra las llaves públicas del JWKS del User Pool.
+2. **Vigencia** – rechaza tokens expirados (`exp`).
+3. **Issuer** – exige que `iss` sea `https://cognito-idp.<region>.amazonaws.com/<userPoolId>`.
+4. **Client ID** – exige que el claim `client_id` coincida con el App Client ID configurado
+   (los ID tokens no traen este claim y son rechazados).
+5. **Roles** – el claim `cognito:groups` se mapea a authorities `ROLE_<GRUPO>` de Spring Security.
+
+### Autorización por endpoint
+
+| Método | Ruta | Roles requeridos |
+|---|---|---|
+| `GET` | `/api/v1/notificaciones/**` | ADMIN, RECEPCIONISTA, AUDITOR |
+| `POST` | `/api/v1/notificaciones/enviar` | ADMIN, RECEPCIONISTA |
+| `OPTIONS` | `/**` | Público (preflight CORS) |
+| `GET` | `/actuator/health`, `/actuator/info` | Público |
+
+> ⚠️ Los roles son propuesta del equipo backend. Si la organización define otros grupos en Cognito,
+> ajustar las reglas en `SecurityConfig.java`.
+
+### Respuestas de error
+
+- **401 Unauthorized** – token ausente, expirado o inválido → JSON `{timestamp, status, error, message, path}`.
+- **403 Forbidden** – token válido pero sin los roles necesarios → JSON con el mismo formato.
 
 ## Endpoints (`/api/v1/notificaciones`)
 
@@ -66,7 +92,9 @@ Copia `.env.example` a `.env` (**no se sube a Git**). En el profile `prod` no ti
 | Variable | Descripción | Ejemplo |
 |---|---|---|
 | `SPRING_PROFILES_ACTIVE` | `prod` (por defecto) o `dev` (solo local, sin JWT). | `prod` |
-| `JWT_ISSUER_URI` | Issuer de Azure (v2.0). | `https://login.microsoftonline.com/<TENANT_ID>/v2.0` |
+| `COGNITO_REGION` | Región de AWS donde está el User Pool. | `us-east-1` |
+| `COGNITO_USER_POOL_ID` | ID del User Pool de Cognito. | `us-east-1_aBcDeFgHi` |
+| `COGNITO_APP_CLIENT_ID` | App Client ID (se valida contra `client_id` del token). | `1abc2def3ghi4jkl` |
 | `DB_HOST` | Endpoint de la instancia RDS. | `andesstay-db.xxxx.us-east-1.rds.amazonaws.com` |
 | `DB_PORT` | Puerto de PostgreSQL. | `5432` |
 | `DB_NAME` | Base de datos creada en RDS. | `notifydb` |
@@ -77,6 +105,17 @@ Copia `.env.example` a `.env` (**no se sube a Git**). En el profile `prod` no ti
 | `CORS_ALLOWED_ORIGINS` | Origen del frontend. | `http://localhost:4200` |
 
 > `notify` es palabra reservada en PostgreSQL, por eso la base se llama `notifydb`.
+
+## Puerto 8082
+
+El microservicio usa `server.port: ${SERVER_PORT:8082}` (en `application.yaml`, `Dockerfile` y `docker-compose`).
+**No cambiar este valor**: el API Gateway y el BFF apuntan al puerto 8082.
+
+En desarrollo local, si `ms-andesstay-reservations` también usa 8082, arrancar notify con un puerto distinto:
+
+```bash
+SERVER_PORT=8083 SPRING_PROFILES_ACTIVE=dev mvn spring-boot:run
+```
 
 ## Ejecución local
 
@@ -130,12 +169,16 @@ basta con arrancar la EC2 y la RDS y los servicios vuelven solos.
 
 - **Integración:** HTTP `ANY http://<ip-elastica>:8082/{proxy}`.
 - **Rutas:**
-  - `ANY /{proxy+}` con el autorizador JWT `azure-jwt` (protege todas las peticiones reales).
+  - `ANY /{proxy+}` con el autorizador JWT `cognito-jwt` (protege todas las peticiones reales).
   - `OPTIONS /{proxy+}` **sin autorizador**, con la misma integración. Es necesaria para que el *preflight* de CORS
     del navegador no reciba `401` (el navegador nunca envía el token en el preflight).
-- **Autorizador JWT `azure-jwt`:** origen de identidad `$request.header.Authorization`; issuer
-  `https://login.microsoftonline.com/<TENANT_ID>/v2.0`; audience = Client ID de la app `andesstay-backend`.
-- **CORS:** origen `http://localhost:4200`; métodos `GET, POST, OPTIONS`; headers `authorization, content-type`.
+- **Autorizador JWT `cognito-jwt`:** origen de identidad `$request.header.Authorization`;
+  issuer `https://cognito-idp.<region>.amazonaws.com/<userPoolId>`;
+  audience = App Client ID del User Pool de Cognito.
+- **CORS:** origen `http://localhost:4200`; métodos `GET, POST, PUT, PATCH, DELETE, OPTIONS`;
+  headers `authorization, content-type`.
+  > **Nota:** incluir PUT, PATCH y DELETE además de GET/POST/OPTIONS para que las peticiones
+  > del frontend Angular no fallen con preflight 403.
 - **Etapa:** `$default` con implementación automática.
 
 Verificación:
@@ -156,15 +199,17 @@ curl -i -X OPTIONS https://<api-id>.execute-api.us-east-1.amazonaws.com/api/v1/n
 |---|---|
 | `compose build requires buildx 0.17.0 or later` | Instalar un buildx reciente en `~/.docker/cli-plugins/docker-buildx`. |
 | El navegador no puede conectar y el preflight da 401 | Falta la ruta `OPTIONS /{proxy+}` sin autorizador. |
-| `401` con sesión iniciada | El token no tiene `aud` = Client ID del backend o `iss` distinto del configurado. |
+| `401` con sesión iniciada | El token no tiene `client_id` = App Client ID del backend o `iss` distinto del configurado. |
 | La app no arranca en `prod` | Falta alguna variable de entorno (no hay valores por defecto). |
 
-## Azure (Microsoft Entra ID)
+## AWS Cognito
 
-- App `andesstay-backend` (API) con scope `access-all` y `requestedAccessTokenVersion = 2`.
-- App `andesstay-frontend` (SPA) con redirect `http://localhost:4200`.
-- Roles de aplicación: `CONSULTOR`, `AUDITOR` (asignados en la aplicación empresarial).
-- Notify valida que el token sea de Azure y esté vigente; el control de acceso por rol se aplica en el frontend.
+- **User Pool** `andesstay-pool` con grupos: `ADMIN`, `AUDITOR`, `HUESPED`, `RECEPCIONISTA`.
+- **App Client** `andesstay-frontend` (SPA) sin secret, con flujo Authorization Code + PKCE,
+  redirect `http://localhost:4200/callback`, logout redirect `http://localhost:4200`.
+- Los grupos asignados a cada usuario aparecen en el claim `cognito:groups` del access token.
+- El access token trae `client_id` (App Client ID) pero **no** `aud`; el ID token trae `aud`
+  pero **no** `client_id`. El backend exige `client_id` para aceptar solo access tokens.
 
 ## Flujo de trabajo (GitHub Flow)
 

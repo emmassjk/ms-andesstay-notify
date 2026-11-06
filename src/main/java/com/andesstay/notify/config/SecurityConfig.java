@@ -1,6 +1,12 @@
 package com.andesstay.notify.config;
 
 import com.andesstay.notify.model.NotifyConstants;
+import com.andesstay.notify.security.CognitoClientIdValidator;
+import com.andesstay.notify.security.CognitoJwtAuthenticationConverter;
+import com.andesstay.notify.security.RestAccessDeniedHandler;
+import com.andesstay.notify.security.RestAuthenticationEntryPoint;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -11,8 +17,14 @@ import org.springframework.security.config.annotation.method.configuration.Enabl
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtDecoders;
+import org.springframework.security.oauth2.jwt.JwtTimestampValidator;
+import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
@@ -29,18 +41,30 @@ import java.util.List;
  * (o llamadas directas autorizadas). Para integrarse de forma segura en la nube:
  * <ol>
  *   <li>Actúa como un <strong>OAuth2 Resource Server</strong>, validando la firma,
- *       issuer y vigencia del JWT (emitido por Azure AD o AWS Cognito).</li>
+ *       issuer, vigencia y {@code client_id} del access token JWT emitido por
+ *       <strong>AWS Cognito</strong>.</li>
+ *   <li>Autoriza por <strong>rol</strong> (claim {@code cognito:groups}) a nivel
+ *       de URL: los GET de consulta requieren ADMIN, RECEPCIONISTA o AUDITOR;
+ *       el POST de envío requiere ADMIN o RECEPCIONISTA.</li>
  *   <li>Configura <strong>CORS</strong> de forma amplia para admitir todos los
  *       orígenes necesarios (frontend Angular, BFF, preflights OPTIONS), exponiendo
  *       el header de Authorization.</li>
  *   <li>Mantiene una política de sesiones <strong>STATELESS</strong> y CSRF deshabilitado
  *       por ser una API REST basada en tokens.</li>
+ *   <li>Responde <strong>401</strong> y <strong>403</strong> en formato JSON
+ *       mediante handlers personalizados.</li>
  * </ol>
+ * <p>
+ * <strong>⚠️ CORS y API Gateway:</strong> si AWS API Gateway ya maneja CORS en
+ * el stage, se recomienda centralizar la configuración en un solo punto (Gateway
+ * o backend) para evitar duplicación de headers.
  */
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
 public class SecurityConfig {
+
+    private static final Logger log = LoggerFactory.getLogger(SecurityConfig.class);
 
     @Value("${app.cors.allowed-origins:*}")
     private String allowedOriginsRaw;
@@ -55,15 +79,35 @@ public class SecurityConfig {
     private boolean allowCredentials;
 
     /**
-     * URI del emisor de tokens OIDC (Azure AD o AWS Cognito).
-     * En producción se inyecta desde la variable de entorno JWT_ISSUER_URI.
+     * URI del emisor de tokens OIDC (AWS Cognito User Pool).
+     * En producción se construye a partir de COGNITO_REGION y COGNITO_USER_POOL_ID.
      */
     @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri:}")
     private String jwtIssuerUri;
 
     /**
+     * App Client ID del User Pool de AWS Cognito.
+     * Se valida contra el claim {@code client_id} del access token.
+     */
+    @Value("${cognito.app-client-id:}")
+    private String cognitoAppClientId;
+
+    private final CognitoJwtAuthenticationConverter jwtAuthenticationConverter;
+    private final RestAuthenticationEntryPoint authenticationEntryPoint;
+    private final RestAccessDeniedHandler accessDeniedHandler;
+
+    public SecurityConfig(CognitoJwtAuthenticationConverter jwtAuthenticationConverter,
+                          RestAuthenticationEntryPoint authenticationEntryPoint,
+                          RestAccessDeniedHandler accessDeniedHandler) {
+        this.jwtAuthenticationConverter = jwtAuthenticationConverter;
+        this.authenticationEntryPoint = authenticationEntryPoint;
+        this.accessDeniedHandler = accessDeniedHandler;
+    }
+
+    /**
      * Cadena principal de filtros de Spring Security.
-     * Habilita CORS, desactiva CSRF y configura el Resource Server para validar el JWT.
+     * Habilita CORS, desactiva CSRF, configura el Resource Server con JWT de
+     * Cognito, autorización por roles y handlers de error JSON.
      */
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http, Environment env) throws Exception {
@@ -80,25 +124,41 @@ public class SecurityConfig {
             if (!env.acceptsProfiles(Profiles.of("dev", "test"))) {
                 throw new IllegalStateException(
                         "spring.security.oauth2.resourceserver.jwt.issuer-uri está vacío fuera de los profiles 'dev' o 'test'. "
-                      + "Define JWT_ISSUER_URI para producción o arranca con SPRING_PROFILES_ACTIVE=dev solo en local.");
+                      + "Define COGNITO_REGION, COGNITO_USER_POOL_ID y COGNITO_APP_CLIENT_ID para producción "
+                      + "o arranca con SPRING_PROFILES_ACTIVE=dev solo en local.");
             }
+            log.info("[SECURITY] Profile dev/test activo: JWT deshabilitado, todos los endpoints permitidos.");
             http.authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
         } else {
-            // ── Profile prod / cloud: Validación obligatoria de JWT ──────────────
+            // ── Profile prod / cloud: Validación obligatoria de JWT de Cognito ──
+            log.info("[SECURITY] JWT habilitado. issuer-uri={}", jwtIssuerUri);
             http
                 .authorizeHttpRequests(auth -> auth
-                    // Permitir todas las peticiones preflight CORS (OPTIONS) sin requerir token
+                    // Preflight CORS (OPTIONS) siempre permitido sin token
                     .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                    // Endpoints públicos de diagnóstico y healthcheck (Actuator / AWS ALB)
+                    // Actuator público para healthchecks (ALB, ECS, etc.)
                     .requestMatchers("/actuator/health", "/actuator/info").permitAll()
-                    // Endpoints del NotificacionController (/api/v1/notificaciones/**) protegidos
-                    .requestMatchers(NotifyConstants.API_BASE + "/**").authenticated()
-                    // Cualquier otra petición requiere autenticación
+                    // POST /enviar: solo ADMIN y RECEPCIONISTA pueden encolar notificaciones
+                    .requestMatchers(HttpMethod.POST, NotifyConstants.API_BASE + NotifyConstants.API_ENVIAR)
+                        .hasAnyRole("ADMIN", "RECEPCIONISTA")
+                    // GET /api/v1/notificaciones/**: ADMIN, RECEPCIONISTA y AUDITOR consultan historial
+                    .requestMatchers(HttpMethod.GET, NotifyConstants.API_BASE + "/**")
+                        .hasAnyRole("ADMIN", "RECEPCIONISTA", "AUDITOR")
+                    // Cualquier otra petición autenticada requiere token válido
                     .anyRequest().authenticated()
                 )
-                // ── Configuración como OAuth2 Resource Server para validar JWT del BFF ──
+                // ── OAuth2 Resource Server: JWT de AWS Cognito ──
                 .oauth2ResourceServer(oauth2 -> oauth2
-                    .jwt(jwt -> {})
+                    .jwt(jwt -> jwt
+                        .jwtAuthenticationConverter(jwtAuthenticationConverter)
+                    )
+                    .authenticationEntryPoint(authenticationEntryPoint)
+                    .accessDeniedHandler(accessDeniedHandler)
+                )
+                // ── Handler de acceso denegado (403) en la capa de autorización ──
+                .exceptionHandling(ex -> ex
+                    .authenticationEntryPoint(authenticationEntryPoint)
+                    .accessDeniedHandler(accessDeniedHandler)
                 );
         }
 
@@ -106,18 +166,45 @@ public class SecurityConfig {
     }
 
     /**
-     * Bean de decodificación de JWT a partir del issuer configurado.
-     * En producción resuelve las llaves públicas (.well-known/jwks.json) automáticamente.
+     * Bean de decodificación de JWT con validación de issuer + expiración +
+     * {@code client_id} (claim propio de access tokens de Cognito).
+     * <p>
+     * Usa {@link DelegatingOAuth2TokenValidator} para combinar los validadores
+     * estándar de Spring (issuer, firma, {@code exp}) con el validador
+     * personalizado {@link CognitoClientIdValidator}.
      */
     @Bean
     public JwtDecoder jwtDecoder() {
-        if (jwtIssuerUri == null || jwtIssuerUri.isBlank() || jwtIssuerUri.contains("CHANGE_ME")) {
+        if (jwtIssuerUri == null || jwtIssuerUri.isBlank()) {
+            // En dev/test no se necesita decoder real
             return token -> {
                 throw new UnsupportedOperationException(
-                    "JWT no configurado o issuer inválido. Configure JWT_ISSUER_URI para activar el Resource Server.");
+                    "JWT no configurado. Configure las variables COGNITO_* para activar el Resource Server.");
             };
         }
-        return JwtDecoders.fromIssuerLocation(jwtIssuerUri);
+
+        // 1. Decoder estándar de Spring: resuelve JWKS desde .well-known/openid-configuration
+        NimbusJwtDecoder decoder = (NimbusJwtDecoder) JwtDecoders.fromIssuerLocation(jwtIssuerUri);
+
+        // 2. Validadores: issuer + expiración (estándar) + client_id (personalizado)
+        OAuth2TokenValidator<Jwt> defaultValidators = JwtValidators.createDefaultWithIssuer(jwtIssuerUri);
+        OAuth2TokenValidator<Jwt> timestampValidator = new JwtTimestampValidator();
+
+        // El validador de client_id se aplica solo si hay un App Client ID configurado
+        if (cognitoAppClientId != null && !cognitoAppClientId.isBlank()) {
+            OAuth2TokenValidator<Jwt> clientIdValidator = new CognitoClientIdValidator(cognitoAppClientId);
+            OAuth2TokenValidator<Jwt> combined = new DelegatingOAuth2TokenValidator<>(
+                    defaultValidators, timestampValidator, clientIdValidator);
+            decoder.setJwtValidator(combined);
+            log.info("[SECURITY] JwtDecoder configurado con validación de issuer + client_id={}", cognitoAppClientId);
+        } else {
+            OAuth2TokenValidator<Jwt> combined = new DelegatingOAuth2TokenValidator<>(
+                    defaultValidators, timestampValidator);
+            decoder.setJwtValidator(combined);
+            log.warn("[SECURITY] JwtDecoder configurado SIN validación de client_id (cognito.app-client-id vacío).");
+        }
+
+        return decoder;
     }
 
     /**

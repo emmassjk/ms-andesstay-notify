@@ -6,6 +6,8 @@
 #   - RabbitMQ: Broker de mensajería (AMQP 5672 + Panel 15672)
 #   - Base de Datos: Conexión externa a AWS RDS (PostgreSQL/MySQL)
 #
+# Autenticación: AWS Cognito (access token con claim client_id).
+#
 # Uso en la instancia EC2:
 #   docker compose -f docker-compose.aws.yml --env-file .env up -d --build
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -66,8 +68,10 @@ services:
       RABBIT_PASS: ${RABBIT_PASS:-guest}
       RABBIT_VHOST: ${RABBIT_VHOST:-/}
 
-      # ── Seguridad OAuth2 / JWT (Validación de tokens emitidos por Azure AD / Cognito) ──
-      JWT_ISSUER_URI: ${JWT_ISSUER_URI}
+      # ── Seguridad OAuth2 / JWT (AWS Cognito) ──
+      COGNITO_REGION: ${COGNITO_REGION}
+      COGNITO_USER_POOL_ID: ${COGNITO_USER_POOL_ID}
+      COGNITO_APP_CLIENT_ID: ${COGNITO_APP_CLIENT_ID}
 
       # ── Configuración de CORS (BFF / Frontend) ──
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-*}

@@ -55,7 +55,7 @@ Content-Type: application/json
 GET {{rabbit}}/queues/%2F
 Authorization: {{auth}}
 
-### 6. PRODUCER: publicar una notificación por la API (en dev no pide token; en prod: Authorization: Bearer <token de Azure>)
+### 6. PRODUCER: publicar una notificación por la API (en dev no pide token; en prod: Authorization: Bearer <token de Cognito>)
 # canal: EMAIL | HOUSEKEEPING | VOUCHER
 POST http://localhost:8082/api/v1/notificaciones/enviar
 Content-Type: application/json
