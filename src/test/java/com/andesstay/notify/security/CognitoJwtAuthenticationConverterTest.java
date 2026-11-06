@@ -84,3 +84,4 @@ class CognitoJwtAuthenticationConverterTest {
         assertTrue(auth.getAuthorities().isEmpty(), "Con lista vacía las authorities deben estar vacías");
     }
 }
+

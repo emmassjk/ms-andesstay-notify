@@ -36,8 +36,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * </ul>
  */
 @WebMvcTest(NotificacionController.class)
-@Import({SecurityConfig.class, CognitoJwtAuthenticationConverter.class,
-         RestAuthenticationEntryPoint.class, RestAccessDeniedHandler.class})
+@Import({ SecurityConfig.class, CognitoJwtAuthenticationConverter.class,
+        RestAuthenticationEntryPoint.class, RestAccessDeniedHandler.class })
 class NotificacionControllerSecurityTest {
 
     @Autowired
@@ -76,7 +76,7 @@ class NotificacionControllerSecurityTest {
     @DisplayName("Sin token → 401 Unauthorized con body JSON")
     void sinToken_401() throws Exception {
         mockMvc.perform(get("/api/v1/notificaciones")
-                        .accept(MediaType.APPLICATION_JSON))
+                .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.status").value(401))
                 .andExpect(jsonPath("$.error").value("Unauthorized"));
@@ -86,8 +86,9 @@ class NotificacionControllerSecurityTest {
     @DisplayName("GET /api/v1/notificaciones con ROLE_AUDITOR → 200")
     void getConAuditor_200() throws Exception {
         mockMvc.perform(get("/api/v1/notificaciones")
-                        .with(jwt().authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_AUDITOR")))
-                        .accept(MediaType.APPLICATION_JSON))
+                .with(jwt().authorities(
+                        new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_AUDITOR")))
+                .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk());
     }
 
@@ -103,7 +104,7 @@ class NotificacionControllerSecurityTest {
                 .andExpect(jsonPath("$.error").value("Forbidden"));
     }
 
-    @Test
+@Test
     @DisplayName("POST /enviar con ROLE_RECEPCIONISTA → 202 Accepted")
     void postConRecepcionista_202() throws Exception {
         // NotificacionProducer.publicar() retorna null por defecto (mock),
