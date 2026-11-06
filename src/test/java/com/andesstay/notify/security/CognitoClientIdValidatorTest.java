@@ -70,3 +70,4 @@ class CognitoClientIdValidatorTest {
         assertTrue(result.hasErrors(), "Debe fallar cuando el token no tiene claim client_id");
     }
 }
+
