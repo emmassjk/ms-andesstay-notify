@@ -35,7 +35,7 @@
             <artifactId>spring-boot-starter-amqp</artifactId>
         </dependency>
 
-        <!-- Seguridad + JWT (Azure AD / OAuth2 Resource Server) -->
+        <!-- Seguridad + JWT (AWS Cognito / OAuth2 Resource Server) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
