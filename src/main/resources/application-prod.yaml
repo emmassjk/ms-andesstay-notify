@@ -1,11 +1,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Profile PROD — AWS EC2 / Docker / Cloud (Profile por defecto)
+# Profile PROD — Docker / Cloud con autenticación AWS Cognito
 #
-# Configuración para despliegue en la nube (AWS RDS + RabbitMQ + OAuth2 JWT).
-# Todos los accesos se leen dinámicamente mediante variables de entorno para
-# evitar credenciales quemadas o referencias fijas a localhost.
-#
-# Autenticación: AWS Cognito (access token con claim client_id).
+# Configuración con validación obligatoria de JWT emitido por AWS Cognito.
+# Los accesos a base de datos y broker cuentan con valores por defecto orientados
+# a los servicios locales de Docker Desktop ('db' y 'rabbitmq'), pero pueden
+# sobreescribirse mediante variables de entorno si fuera necesario.
 # ─────────────────────────────────────────────────────────────────────────────
 spring:
   # ─── Seguridad: OAuth2 Resource Server con JWT (AWS Cognito) ───────────────
@@ -13,15 +12,13 @@ spring:
     oauth2:
       resourceserver:
         jwt:
-          issuer-uri: https://cognito-idp.${COGNITO_REGION}.amazonaws.com/${COGNITO_USER_POOL_ID}
+          issuer-uri: https://cognito-idp.${COGNITO_REGION:us-east-1}.amazonaws.com/${COGNITO_USER_POOL_ID}
 
-  # ─── Base de datos Cloud (AWS RDS PostgreSQL / MySQL) ─────────────────────
-  # Soporta conexión directa mediante DB_URL (ej. jdbc:postgresql://rds-host:5432/dbname)
-  # o mediante variables separadas (DB_HOST, DB_PORT, DB_NAME).
+  # ─── Base de datos (contenedor 'db' en Docker Desktop o externa) ─────────────
   datasource:
-    url: ${DB_URL:jdbc:postgresql://${DB_HOST}:${DB_PORT:5432}/${DB_NAME}}
-    username: ${DB_USER}
-    password: ${DB_PASS}
+    url: ${DB_URL:jdbc:postgresql://${DB_HOST:db}:${DB_PORT:5432}/${DB_NAME:andesstay_notify}}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASS:postgres}
     driver-class-name: ${DB_DRIVER:org.postgresql.Driver}
     hikari:
       maximum-pool-size: ${DB_POOL_SIZE:10}
@@ -33,8 +30,6 @@ spring:
   # ─── Persistencia JPA / Hibernate ─────────────────────────────────────────
   jpa:
     hibernate:
-      # 'update' permite que Hibernate cree/actualice las tablas (notificaciones,
-      # processed_events) en una base de datos RDS nueva.
       ddl-auto: update
     show-sql: ${SHOW_SQL:false}
     properties:
@@ -42,12 +37,12 @@ spring:
         dialect: ${HIBERNATE_DIALECT:org.hibernate.dialect.PostgreSQLDialect}
         format_sql: false
 
-  # ─── Broker de Mensajería: RabbitMQ (AWS EC2 / Amazon MQ) ─────────────────
+  # ─── Broker de Mensajería: RabbitMQ (contenedor 'rabbitmq' en Docker Desktop) 
   rabbitmq:
-    host: ${RABBIT_HOST}
+    host: ${RABBIT_HOST:rabbitmq}
     port: ${RABBIT_PORT:5672}
-    username: ${RABBIT_USER}
-    password: ${RABBIT_PASS}
+    username: ${RABBIT_USER:guest}
+    password: ${RABBIT_PASS:guest}
     virtual-host: ${RABBIT_VHOST:/}
     listener:
       simple:
@@ -66,15 +61,15 @@ server:
 cognito:
   app-client-id: ${COGNITO_APP_CLIENT_ID}
 
-# ─── Configuración de CORS para el entorno Cloud ─────────────────────────────
+# ─── Configuración de CORS ───────────────────────────────────────────────────
 app:
   cors:
-    allowed-origins: ${CORS_ALLOWED_ORIGINS:*}
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:4200,http://localhost:8080,http://localhost:8081}
     allowed-methods: ${CORS_ALLOWED_METHODS:GET,POST,PUT,DELETE,PATCH,OPTIONS}
     allowed-headers: ${CORS_ALLOWED_HEADERS:*}
     allow-credentials: ${CORS_ALLOW_CREDENTIALS:true}
 
-# ─── Logging en producción ───────────────────────────────────────────────────
+# ─── Logging ─────────────────────────────────────────────────────────────────
 logging:
   level:
     com.andesstay.notify: ${LOG_LEVEL:INFO}
