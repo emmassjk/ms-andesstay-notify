@@ -1,216 +1,187 @@
 # ms-andesstay-notify
 
-Microservicio de **mensajería y notificaciones** del proyecto AndesStay (DSY1107 – Desarrollo Cloud Native I, Entrega 2).
-Spring Boot 3.3 · Java 21 · RabbitMQ · PostgreSQL (RDS) · autenticación con AWS Cognito · API Gateway (AWS).
+Microservicio de **mensajería y notificaciones** del proyecto AndesStay (DSY1107 – Desarrollo Cloud Native I).
+Desarrollado en **Spring Boot 3.3.5 · Java 21 · RabbitMQ · PostgreSQL · autenticación con AWS Cognito**, preparado para ejecutarse localmente con **Docker Desktop**.
 
-## Arquitectura
+---
+
+## Arquitectura Local (Docker Desktop)
 
 ```
-Angular (local) ──login──► AWS Cognito (User Pool) ──► access token (JWT)
+Frontend Angular (:4200) / BFF (:8080)
       │
-      └─ Bearer token ─► API Gateway (AWS, JWT authorizer Cognito)
-                              │
-                              ▼
-                   EC2 · Docker ── ms-andesstay-notify :8082
-                                      │ POST /enviar = PRODUCER ──► RabbitMQ (EC2) ──┐
-                                      │                                              │ cmd.direct
-                                      │ CONSUMERS (email, housekeeping, voucher) ◄───┘
-                                      └─► PostgreSQL en RDS (historial + idempotencia)
+      ▼  (HTTP / Bearer Access Token de AWS Cognito)
+Docker Desktop · Red interna 'notify-net'
+┌────────────────────────────────────────────────────────────────────────┐
+│                                                                        │
+│   ms-andesstay-notify (:8082)                                          │
+│   ├── Producer: POST /enviar ──────► RabbitMQ (:5672 / :15672)         │
+│   │                                       │ exchange 'cmd.direct'      │
+│   │                                       ▼                            │
+│   └── Consumers (email, housekeeping, voucher) ──► PostgreSQL (:5432)  │
+│                                                     (tabla: notificaciones)
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Producer:** `POST /api/v1/notificaciones/enviar` valida la solicitud y publica un evento en el exchange `cmd.direct`
-  con la routing key del canal (`email.send`, `housekeeping.ticket`, `voucher.gen`). Responde `202 Accepted` con el `eventId`.
-- **Consumers:** un listener por cola (`q.cmd.email`, `q.cmd.housekeeping`, `q.cmd.voucher`) con ACK manual,
-  idempotencia por `eventId`, reintentos (máx. 3) y **DLQ** (`q.cmd.*.dlq`) para mensajes que fallan definitivamente.
+- **Producer:** `POST /api/v1/notificaciones/enviar` valida la solicitud y publica un evento en el exchange `cmd.direct` con la routing key correspondiente (`email.send`, `housekeeping.ticket`, `voucher.gen`). Responde `202 Accepted` con el `eventId`.
+- **Consumers:** Un listener asíncrono por canal (`q.cmd.email`, `q.cmd.housekeeping`, `q.cmd.voucher`) con ACK manual, control de idempotencia por `eventId`, reintentos (máx. 3) y Dead Letter Queue (**DLQ**: `q.cmd.*.dlq`) ante errores no recuperables.
+- **Persistencia:** Guarda el historial de notificaciones enviadas y fallidas en PostgreSQL local para trazabilidad y auditoría.
 
-## Seguridad
+---
 
-El microservicio actúa como un **OAuth2 Resource Server** que valida el access token JWT emitido por
-**AWS Cognito**. La validación incluye:
+## Ejecución con Docker Desktop
 
-1. **Firma** – verifica contra las llaves públicas del JWKS del User Pool.
-2. **Vigencia** – rechaza tokens expirados (`exp`).
-3. **Issuer** – exige que `iss` sea `https://cognito-idp.<region>.amazonaws.com/<userPoolId>`.
-4. **Client ID** – exige que el claim `client_id` coincida con el App Client ID configurado
-   (los ID tokens no traen este claim y son rechazados).
-5. **Roles** – el claim `cognito:groups` se mapea a authorities `ROLE_<GRUPO>` de Spring Security.
+### 1. Prerrequisitos
+- Tener instalado y en ejecución **Docker Desktop** (con soporte para Docker Compose v2).
 
-### Autorización por endpoint
+### 2. Iniciar el Stack Completo
+En la raíz del proyecto, ejecuta:
 
-| Método | Ruta | Roles requeridos |
+```bash
+docker compose up -d --build
+```
+
+Docker Desktop levantará 3 contenedores en la red `notify-net`:
+1. `andesstay-notify-db`: PostgreSQL 16 (puerto `5432`).
+2. `andesstay-notify-rabbit`: RabbitMQ 3 con Management UI (puertos `5672` y `15672`).
+3. `andesstay-notify-app`: Microservicio Spring Boot 3.3.5 (puerto `8082`).
+
+### 3. Verificar el Estado y Logs
+```bash
+# Ver estado de los contenedores y sus healthchecks
+docker compose ps
+
+# Ver logs del microservicio
+docker compose logs -f app
+
+# Verificar que la aplicación esté saludable
+curl http://localhost:8082/actuator/health
+```
+
+### 4. Paneles y Accesos Locales
+| Servicio | URL Local | Credenciales por defecto |
 |---|---|---|
-| `GET` | `/api/v1/notificaciones/**` | ADMIN, RECEPCIONISTA, AUDITOR |
-| `POST` | `/api/v1/notificaciones/enviar` | ADMIN, RECEPCIONISTA |
-| `OPTIONS` | `/**` | Público (preflight CORS) |
-| `GET` | `/actuator/health`, `/actuator/info` | Público |
+| **API Notificaciones** | `http://localhost:8082/api/v1/notificaciones` | Según perfil (`dev`: libre / `prod`: Bearer Token) |
+| **Health Check** | `http://localhost:8082/actuator/health` | Público (`{"status":"UP"}`) |
+| **Panel RabbitMQ** | `http://localhost:15672` | `guest` / `guest` |
+| **PostgreSQL** | `localhost:5432` (DB: `andesstay_notify`) | `postgres` / `postgres` |
 
-> ⚠️ Los roles son propuesta del equipo backend. Si la organización define otros grupos en Cognito,
-> ajustar las reglas en `SecurityConfig.java`.
+### 5. Detener el Stack
+```bash
+docker compose down        # Detiene y elimina contenedores y red
+docker compose down -v     # Detiene y borra también los volúmenes persistentes
+```
 
-### Respuestas de error
+---
 
-- **401 Unauthorized** – token ausente, expirado o inválido → JSON `{timestamp, status, error, message, path}`.
-- **403 Forbidden** – token válido pero sin los roles necesarios → JSON con el mismo formato.
+## Perfiles de Ejecución (`SPRING_PROFILES_ACTIVE`)
+
+El microservicio admite dos modos de operación en Docker Desktop:
+
+1. **`dev` (por defecto en Docker Desktop):**
+   - JWT deshabilitado en Spring Security (`permitAll`).
+   - Ideal para desarrollo ágil y pruebas rápidas desde Postman, `test.http` o el frontend sin requerir inicio de sesión en Cognito.
+   - Conexión automática a PostgreSQL y RabbitMQ locales en Docker.
+
+2. **`prod` (Seguridad estricta con AWS Cognito):**
+   - Actúa como **OAuth2 Resource Server**, exigiendo un access token JWT válido emitido por el User Pool de AWS Cognito.
+   - Valida firma (JWKS vía internet), expiración, issuer (`https://cognito-idp.<region>.amazonaws.com/<userPoolId>`) y client ID (`client_id`).
+   - Autoriza por roles basados en el claim `cognito:groups`.
+   - Se activa copiando `.env.example` a `.env` y configurando `SPRING_PROFILES_ACTIVE=prod` junto con las credenciales del User Pool de Cognito.
+
+---
+
+## Seguridad (AWS Cognito)
+
+Cuando se ejecuta con profile `prod`:
+- **Validación del token:**
+  - `client_id`: El validador `CognitoClientIdValidator` exige que el claim `client_id` coincida con el App Client ID configurado (rechazando ID tokens que carecen de este claim).
+  - `cognito:groups`: El conversor `CognitoJwtAuthenticationConverter` extrae los grupos y los mapea a `ROLE_<GRUPO>` en mayúsculas (ej: `ROLE_ADMIN`, `ROLE_RECEPCIONISTA`, `ROLE_AUDITOR`).
+- **Control de Acceso (RBAC):**
+  - `GET /api/v1/notificaciones/**`: Requiere `ADMIN`, `RECEPCIONISTA` o `AUDITOR`.
+  - `POST /api/v1/notificaciones/enviar`: Requiere `ADMIN` o `RECEPCIONISTA`.
+  - `OPTIONS /**`, `/actuator/health`, `/actuator/info`: Públicos.
+- **Respuestas de Error en JSON:**
+  - `401 Unauthorized` (`RestAuthenticationEntryPoint`): Cuando el token no se envía o es inválido.
+  - `403 Forbidden` (`RestAccessDeniedHandler`): Cuando el token es válido pero no cuenta con el rol necesario.
+
+---
+
+## Variables de Entorno (`.env`)
+
+Copia `.env.example` a `.env` para personalizar la configuración local:
+
+| Variable | Descripción | Valor por defecto (Docker Desktop) |
+|---|---|---|
+| `SPRING_PROFILES_ACTIVE` | Perfil de Spring Boot (`dev` o `prod`). | `dev` |
+| `SERVER_PORT` | Puerto expuesto en el host para el microservicio. | `8082` |
+| `DB_HOST` | Host de PostgreSQL (nombre del servicio en Docker). | `db` |
+| `DB_PORT` | Puerto de PostgreSQL. | `5432` |
+| `DB_NAME` | Nombre de la base de datos. | `andesstay_notify` |
+| `DB_USER` / `DB_PASS` | Credenciales de PostgreSQL. | `postgres` / `postgres` |
+| `RABBIT_HOST` | Host de RabbitMQ (nombre del servicio en Docker). | `rabbitmq` |
+| `RABBIT_PORT` | Puerto AMQP. | `5672` |
+| `RABBIT_USER` / `RABBIT_PASS` | Credenciales de RabbitMQ. | `guest` / `guest` |
+| `COGNITO_REGION` | Región AWS del User Pool (solo para `prod`). | `us-east-1` |
+| `COGNITO_USER_POOL_ID` | ID del User Pool de Cognito (solo para `prod`). | *(vacío en dev)* |
+| `COGNITO_APP_CLIENT_ID` | App Client ID de Cognito (solo para `prod`). | *(vacío en dev)* |
+| `CORS_ALLOWED_ORIGINS` | Orígenes permitidos (Angular, BFF). | `http://localhost:3000,http://localhost:4200,http://localhost:8080,http://localhost:8081` |
+
+---
+
+## Puerto 8082 y Resolución de Conflictos
+
+El microservicio utiliza por defecto el puerto **8082** (`server.port: ${SERVER_PORT:8082}`).
+
+Si en tu entorno local el puerto 8082 ya está ocupado por otro servicio (como `ms-andesstay-reservations`), puedes mapear un puerto externo diferente en `.env`:
+
+```env
+SERVER_PORT=8083
+```
+Y levantar con `docker compose up -d`. El microservicio responderá en `http://localhost:8083`.
+
+---
 
 ## Endpoints (`/api/v1/notificaciones`)
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| POST | `/enviar` | **Producer.** Encola una notificación (202 Accepted + `eventId`). |
-| GET | `/` | Historial completo. |
-| GET | `/{id}` | Una notificación. |
-| GET | `/canal/{canal}` | Filtra por `EMAIL`, `HOUSEKEEPING` o `VOUCHER`. |
-| GET | `/estado/{estado}` | Filtra por `PENDIENTE`, `ENVIADA` o `FALLIDA`. |
-| GET | `/reserva/{reservationId}` | Notificaciones de una reserva. |
-| GET | `/actuator/health` | Público. |
+| `POST` | `/enviar` | **Producer:** encola una notificación en RabbitMQ (`202 Accepted`). |
+| `GET` | `/` | Obtiene el historial completo de notificaciones. |
+| `GET` | `/{id}` | Obtiene una notificación por ID. |
+| `GET` | `/canal/{canal}` | Filtra por canal (`EMAIL`, `HOUSEKEEPING`, `VOUCHER`). |
+| `GET` | `/estado/{estado}` | Filtra por estado (`PENDIENTE`, `ENVIADA`, `FALLIDA`). |
+| `GET` | `/reserva/{reservationId}` | Obtiene notificaciones de una reserva. |
+| `GET` | `/actuator/health` | Healthcheck del servicio (Público). |
 
-Cuerpo de `POST /enviar`:
-
+Cuerpo de ejemplo para `POST /api/v1/notificaciones/enviar`:
 ```json
 {
   "canal": "EMAIL",
-  "reservationId": 1,
-  "guestName": "Nombre Apellido",
-  "guestEmail": "huesped@correo.cl",
-  "propertyName": "Cabaña Los Andes",
-  "roomNumber": "C-1",
-  "checkIn": "2026-11-01",
-  "checkOut": "2026-11-04",
+  "reservationId": 10,
+  "guestName": "Ana Soto",
+  "guestEmail": "ana@example.com",
+  "propertyName": "Cabaña Lago",
+  "roomNumber": "C-3",
+  "checkIn": "2026-11-02",
+  "checkOut": "2026-11-05",
   "totalAmount": 90000,
   "currency": "CLP",
   "operatorEmail": "operador@andesstay.cl",
-  "specialRequests": "Llegada tarde"
+  "specialRequests": "Cama extra"
 }
 ```
 
-Ejemplos listos en [`test.http`](test.http).
+Pruebas listas disponibles en [`test.http`](test.http).
 
-## Variables de entorno
+---
 
-Copia `.env.example` a `.env` (**no se sube a Git**). En el profile `prod` no tienen valor por defecto: si falta una, la app no arranca.
+## Ejecución de Pruebas Unitarias
 
-| Variable | Descripción | Ejemplo |
-|---|---|---|
-| `SPRING_PROFILES_ACTIVE` | `prod` (por defecto) o `dev` (solo local, sin JWT). | `prod` |
-| `COGNITO_REGION` | Región de AWS donde está el User Pool. | `us-east-1` |
-| `COGNITO_USER_POOL_ID` | ID del User Pool de Cognito. | `us-east-1_aBcDeFgHi` |
-| `COGNITO_APP_CLIENT_ID` | App Client ID (se valida contra `client_id` del token). | `1abc2def3ghi4jkl` |
-| `DB_HOST` | Endpoint de la instancia RDS. | `andesstay-db.xxxx.us-east-1.rds.amazonaws.com` |
-| `DB_PORT` | Puerto de PostgreSQL. | `5432` |
-| `DB_NAME` | Base de datos creada en RDS. | `notifydb` |
-| `DB_USER`, `DB_PASS` | Credenciales de RDS. | `postgres` / *(secreto)* |
-| `RABBIT_HOST` | Host de RabbitMQ (nombre del servicio en el compose o IP de la EC2). | `rabbitmq` |
-| `RABBIT_PORT` | Puerto AMQP (opcional). | `5672` |
-| `RABBIT_USER`, `RABBIT_PASS` | Credenciales de RabbitMQ. | *(secreto)* |
-| `CORS_ALLOWED_ORIGINS` | Origen del frontend. | `http://localhost:4200` |
-
-> `notify` es palabra reservada en PostgreSQL, por eso la base se llama `notifydb`.
-
-## Puerto 8082
-
-El microservicio usa `server.port: ${SERVER_PORT:8082}` (en `application.yaml`, `Dockerfile` y `docker-compose`).
-**No cambiar este valor**: el API Gateway y el BFF apuntan al puerto 8082.
-
-En desarrollo local, si `ms-andesstay-reservations` también usa 8082, arrancar notify con un puerto distinto:
+Para ejecutar la suite de pruebas automatizadas con Maven:
 
 ```bash
-SERVER_PORT=8083 SPRING_PROFILES_ACTIVE=dev mvn spring-boot:run
+mvn clean test
 ```
 
-## Ejecución local
-
-```bash
-docker compose up -d --build     # Postgres + RabbitMQ + la app (profile dev) en :8082
-# Panel de RabbitMQ: http://localhost:15672  (guest / guest)
-```
-
-O sin Docker para la app: levanta `db` y `rabbitmq` con compose y ejecuta
-`SPRING_PROFILES_ACTIVE=dev mvn spring-boot:run`.
-
-Tests: `mvn test`.
-
-## Despliegue en AWS (Learner Lab, `us-east-1`)
-
-Recursos creados:
-
-| Recurso | Configuración |
-|---|---|
-| **RDS** `andesstay-db` | PostgreSQL, `db.t3.micro`, 20 GiB, sin acceso público, base inicial `notifydb`. |
-| **EC2** `andesstay-notify` | Amazon Linux 2023, `t3.small`, 20 GiB, con IP elástica. Corre RabbitMQ y notify con Docker. |
-| **Security group de la EC2** | Entrada: 22 (SSH, IP del equipo), 8082 (API Gateway) y 15672 (panel RabbitMQ, IP del equipo). |
-| **Security group de RDS** | Entrada: 5432 solo desde el security group de la EC2. |
-| **API Gateway** `andesstay-api` | HTTP API con las rutas y el autorizador descritos abajo. |
-
-Pasos en la EC2:
-
-```bash
-# 1. Docker, git y Compose
-sudo dnf install -y docker git && sudo systemctl enable --now docker
-sudo usermod -aG docker ec2-user          # volver a conectarse por SSH después
-# (Docker Compose v2 y buildx >= 0.17 como plugins en ~/.docker/cli-plugins)
-
-# 2. Código y configuración
-git clone https://github.com/<usuario>/ms-andesstay-notify.git && cd ms-andesstay-notify
-cp .env.example .env && nano .env         # completar con los valores reales (ver tabla)
-
-# 3. Levantar RabbitMQ + notify
-docker compose -f docker-compose.aws.yml --env-file .env up -d --build
-docker logs -f notify                     # esperar "Started NotifyApplication"
-curl -i localhost:8082/actuator/health    # {"status":"UP"}
-```
-
-Panel de RabbitMQ: `http://<ip-elastica>:15672` (usuario y contraseña de `RABBIT_USER` / `RABBIT_PASS`).
-Deben existir 6 colas: `q.cmd.email`, `q.cmd.housekeeping`, `q.cmd.voucher` y sus DLQ.
-
-Los contenedores usan `restart: unless-stopped`: si el laboratorio se detiene y se vuelve a iniciar,
-basta con arrancar la EC2 y la RDS y los servicios vuelven solos.
-
-### API Gateway (HTTP API)
-
-- **Integración:** HTTP `ANY http://<ip-elastica>:8082/{proxy}`.
-- **Rutas:**
-  - `ANY /{proxy+}` con el autorizador JWT `cognito-jwt` (protege todas las peticiones reales).
-  - `OPTIONS /{proxy+}` **sin autorizador**, con la misma integración. Es necesaria para que el *preflight* de CORS
-    del navegador no reciba `401` (el navegador nunca envía el token en el preflight).
-- **Autorizador JWT `cognito-jwt`:** origen de identidad `$request.header.Authorization`;
-  issuer `https://cognito-idp.<region>.amazonaws.com/<userPoolId>`;
-  audience = App Client ID del User Pool de Cognito.
-- **CORS:** origen `http://localhost:4200`; métodos `GET, POST, PUT, PATCH, DELETE, OPTIONS`;
-  headers `authorization, content-type`.
-  > **Nota:** incluir PUT, PATCH y DELETE además de GET/POST/OPTIONS para que las peticiones
-  > del frontend Angular no fallen con preflight 403.
-- **Etapa:** `$default` con implementación automática.
-
-Verificación:
-
-```bash
-# Sin token → 401 (lo responde el API Gateway)
-curl -i https://<api-id>.execute-api.us-east-1.amazonaws.com/api/v1/notificaciones
-
-# Preflight → 200 con access-control-allow-origin
-curl -i -X OPTIONS https://<api-id>.execute-api.us-east-1.amazonaws.com/api/v1/notificaciones \
-  -H "Origin: http://localhost:4200" -H "Access-Control-Request-Method: GET" \
-  -H "Access-Control-Request-Headers: authorization"
-```
-
-### Problemas frecuentes
-
-| Síntoma | Causa y solución |
-|---|---|
-| `compose build requires buildx 0.17.0 or later` | Instalar un buildx reciente en `~/.docker/cli-plugins/docker-buildx`. |
-| El navegador no puede conectar y el preflight da 401 | Falta la ruta `OPTIONS /{proxy+}` sin autorizador. |
-| `401` con sesión iniciada | El token no tiene `client_id` = App Client ID del backend o `iss` distinto del configurado. |
-| La app no arranca en `prod` | Falta alguna variable de entorno (no hay valores por defecto). |
-
-## AWS Cognito
-
-- **User Pool** `andesstay-pool` con grupos: `ADMIN`, `AUDITOR`, `HUESPED`, `RECEPCIONISTA`.
-- **App Client** `andesstay-frontend` (SPA) sin secret, con flujo Authorization Code + PKCE,
-  redirect `http://localhost:4200/callback`, logout redirect `http://localhost:4200`.
-- Los grupos asignados a cada usuario aparecen en el claim `cognito:groups` del access token.
-- El access token trae `client_id` (App Client ID) pero **no** `aud`; el ID token trae `aud`
-  pero **no** `client_id`. El backend exige `client_id` para aceptar solo access tokens.
-
-## Flujo de trabajo (GitHub Flow)
-
-`main` siempre estable · ramas `feature/…`, `fix/…`, `docs/…` · commits tipo `feat:` / `fix:` / `docs:` · Pull Request a `main` con revisión de otro integrante.
+Incluye validadores de `client_id`, convertidor de grupos de Cognito y pruebas de seguridad MockMvc sobre el controlador.
