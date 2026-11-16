@@ -44,7 +44,7 @@ docker compose up -d --build
 Docker Desktop levantará 3 contenedores en la red `notify-net`:
 1. `andesstay-notify-db`: PostgreSQL 16 (puerto `5432`).
 2. `andesstay-notify-rabbit`: RabbitMQ 3 con Management UI (puertos `5672` y `15672`).
-3. `andesstay-notify-app`: Microservicio Spring Boot 3.3.5 (puerto `8082`).
+3. `andesstay-notify-app`: Microservicio Spring Boot 3.3.5 (puerto local `8084`).
 
 ### 3. Verificar el Estado y Logs
 ```bash
@@ -55,14 +55,14 @@ docker compose ps
 docker compose logs -f app
 
 # Verificar que la aplicación esté saludable
-curl http://localhost:8082/actuator/health
+curl http://localhost:8084/actuator/health
 ```
 
 ### 4. Paneles y Accesos Locales
 | Servicio | URL Local | Credenciales por defecto |
 |---|---|---|
-| **API Notificaciones** | `http://localhost:8082/api/v1/notificaciones` | Según perfil (`dev`: libre / `prod`: Bearer Token) |
-| **Health Check** | `http://localhost:8082/actuator/health` | Público (`{"status":"UP"}`) |
+| **API Notificaciones** | `http://localhost:8084/api/v1/notificaciones` | Según perfil (`dev`: libre / `prod`: Bearer Token) |
+| **Health Check** | `http://localhost:8084/actuator/health` | Público (`{"status":"UP"}`) |
 | **Panel RabbitMQ** | `http://localhost:15672` | `guest` / `guest` |
 | **PostgreSQL** | `localhost:5432` (DB: `andesstay_notify`) | `postgres` / `postgres` |
 
@@ -114,7 +114,7 @@ Copia `.env.example` a `.env` para personalizar la configuración local:
 | Variable | Descripción | Valor por defecto (Docker Desktop) |
 |---|---|---|
 | `SPRING_PROFILES_ACTIVE` | Perfil de Spring Boot (`dev` o `prod`). | `dev` |
-| `SERVER_PORT` | Puerto expuesto en el host para el microservicio. | `8082` |
+| `SERVER_PORT` | Puerto interno del contenedor (no cambiar; el host usa 8084). | `8082` |
 | `DB_HOST` | Host de PostgreSQL (nombre del servicio en Docker). | `db` |
 | `DB_PORT` | Puerto de PostgreSQL. | `5432` |
 | `DB_NAME` | Nombre de la base de datos. | `andesstay_notify` |
@@ -129,16 +129,13 @@ Copia `.env.example` a `.env` para personalizar la configuración local:
 
 ---
 
-## Puerto 8082 y Resolución de Conflictos
+## Puerto en local (8084) y puerto 8082
 
-El microservicio utiliza por defecto el puerto **8082** (`server.port: ${SERVER_PORT:8082}`).
+Dentro del contenedor y en AWS, el microservicio usa el puerto **8082** (`server.port: ${SERVER_PORT:8082}`), y el API Gateway apunta ahí. No cambiar.
 
-Si en tu entorno local el puerto 8082 ya está ocupado por otro servicio (como `ms-andesstay-reservations`), puedes mapear un puerto externo diferente en `.env`:
+En local con Docker, notify se expone en el puerto **8084** del host (`"8084:8082"` en `docker-compose.yml`) para no chocar con `ms-andesstay-reservations`, que usa 8082.
 
-```env
-SERVER_PORT=8083
-```
-Y levantar con `docker compose up -d`. El microservicio responderá en `http://localhost:8083`.
+Health local: `http://localhost:8084/actuator/health`
 
 ---
 
@@ -183,5 +180,4 @@ Para ejecutar la suite de pruebas automatizadas con Maven:
 ```bash
 mvn clean test
 ```
-
 Incluye validadores de `client_id`, convertidor de grupos de Cognito y pruebas de seguridad MockMvc sobre el controlador.
