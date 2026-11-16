@@ -2,9 +2,9 @@ spring:
   application:
     name: ms-andesstay-notify
 
-  # ─── Profile activo: 'prod' por defecto (seguro). En local usar SPRING_PROFILES_ACTIVE=dev ──
+  # ─── Profile activo: 'dev' por defecto en local. Para producción usar SPRING_PROFILES_ACTIVE=prod ──
   profiles:
-    active: ${SPRING_PROFILES_ACTIVE:prod}
+    active: ${SPRING_PROFILES_ACTIVE:dev}
 
   # ─── Base de datos PostgreSQL ─────────────────────────────────────────────────
   datasource:

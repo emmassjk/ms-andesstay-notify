@@ -14,9 +14,9 @@ spring:
         jwt:
           issuer-uri: https://cognito-idp.${COGNITO_REGION:us-east-1}.amazonaws.com/${COGNITO_USER_POOL_ID}
 
-  # ─── Base de datos (contenedor 'db' en Docker Desktop o externa) ─────────────
+  # ─── Base de datos (contenedor 'db' en Docker Desktop o localhost) ──────────
   datasource:
-    url: ${DB_URL:jdbc:postgresql://${DB_HOST:db}:${DB_PORT:5432}/${DB_NAME:andesstay_notify}}
+    url: ${DB_URL:jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:andesstay_notify}}
     username: ${DB_USER:postgres}
     password: ${DB_PASS:postgres}
     driver-class-name: ${DB_DRIVER:org.postgresql.Driver}
@@ -37,9 +37,9 @@ spring:
         dialect: ${HIBERNATE_DIALECT:org.hibernate.dialect.PostgreSQLDialect}
         format_sql: false
 
-  # ─── Broker de Mensajería: RabbitMQ (contenedor 'rabbitmq' en Docker Desktop) 
+  # ─── Broker de Mensajería: RabbitMQ (contenedor en Docker Desktop o localhost)
   rabbitmq:
-    host: ${RABBIT_HOST:rabbitmq}
+    host: ${RABBIT_HOST:localhost}
     port: ${RABBIT_PORT:5672}
     username: ${RABBIT_USER:guest}
     password: ${RABBIT_PASS:guest}
