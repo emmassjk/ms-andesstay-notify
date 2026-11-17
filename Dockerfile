@@ -42,9 +42,9 @@ RUN chown -R appuser:appgroup /app
 USER appuser
 
 # ── Variables de entorno por defecto ──────────────────────────────────────────
-# Por defecto se usa 'dev' para arranque directo en Docker Desktop.
-# Para producción o validación de Cognito, establecer SPRING_PROFILES_ACTIVE=prod.
-ENV SPRING_PROFILES_ACTIVE=dev \
+# Por defecto se usa 'prod' para despliegues en la nube y validación con Cognito.
+# Para desarrollo local sin JWT, sobreescribir con SPRING_PROFILES_ACTIVE=dev.
+ENV SPRING_PROFILES_ACTIVE=prod \
     JAVA_OPTS=""
 
 # Puerto expuesto por Spring Boot (configurado en application.yaml).
